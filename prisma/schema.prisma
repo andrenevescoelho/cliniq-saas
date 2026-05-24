@@ -1,0 +1,571 @@
+// ============================================================
+// ClinIQ — Prisma Schema
+// PostgreSQL | Multi-tenant | RBAC
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum UserRole {
+  SUPER_ADMIN
+  CLINIC_OWNER
+  CLINIC_ADMIN
+  DOCTOR
+  RECEPTIONIST
+  FINANCIAL
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  RESCHEDULED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  PIX
+  CREDIT_CARD
+  DEBIT_CARD
+  CASH
+  INSURANCE
+  LINK
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum ConversationStatus {
+  OPEN
+  BOT
+  WAITING_HUMAN
+  HUMAN
+  CLOSED
+}
+
+enum AutomationTrigger {
+  APPOINTMENT_CREATED
+  APPOINTMENT_CONFIRMED
+  APPOINTMENT_CANCELLED
+  APPOINTMENT_REMINDER_24H
+  APPOINTMENT_REMINDER_1H
+  APPOINTMENT_NO_SHOW
+  PAYMENT_RECEIVED
+  PAYMENT_OVERDUE
+  PATIENT_INACTIVE
+  PATIENT_BIRTHDAY
+  CUSTOM
+}
+
+enum AutomationStatus {
+  ACTIVE
+  INACTIVE
+  DRAFT
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  EXPORT
+  IMPORT
+  SEND_MESSAGE
+  TRIGGER_AUTOMATION
+}
+
+enum SubscriptionPlan {
+  STARTER
+  GROWTH
+  SCALE
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELLED
+  UNPAID
+}
+
+// ============================================================
+// PLATFORM (Super Admin)
+// ============================================================
+
+model Plan {
+  id                String   @id @default(cuid())
+  name              String
+  slug              SubscriptionPlan @unique
+  priceMonthly      Decimal  @db.Decimal(10, 2)
+  priceYearly       Decimal  @db.Decimal(10, 2)
+  maxUsers          Int?     // null = unlimited
+  maxWhatsapp       Int
+  maxAiMessages     Int
+  features          Json     // feature flags as JSON
+  stripePriceId     String?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+// ============================================================
+// CLINIC (Tenant)
+// ============================================================
+
+model Clinic {
+  id            String   @id @default(cuid())
+  name          String
+  slug          String   @unique  // used for subdomain future
+  email         String
+  phone         String?
+  document      String?  // CNPJ/CPF
+  logoUrl       String?
+  address       Json?    // { street, number, city, state, zip }
+  settings      Json     @default("{}")
+  timezone      String   @default("America/Sao_Paulo")
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  users           ClinicUser[]
+  patients        Patient[]
+  schedules       Schedule[]
+  appointments    Appointment[]
+  whatsappInstances WhatsappInstance[]
+  conversations   Conversation[]
+  automations     Automation[]
+  payments        Payment[]
+  invoices        Invoice[]
+  auditLogs       AuditLog[]
+  subscription    Subscription?
+  aiConfig        AiConfig?
+  tags            Tag[]
+}
+
+// ============================================================
+// AUTH & USERS
+// ============================================================
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified DateTime?
+  passwordHash  String?
+  avatarUrl     String?
+  phone         String?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  clinics       ClinicUser[]
+  accounts      Account[]
+  sessions      Session[]
+  auditLogs     AuditLog[]
+}
+
+model ClinicUser {
+  id        String   @id @default(cuid())
+  clinicId  String
+  userId    String
+  role      UserRole
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  clinic    Clinic   @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  appointments Appointment[] @relation("DoctorAppointments")
+
+  @@unique([clinicId, userId])
+  @@index([clinicId])
+  @@index([userId])
+}
+
+// NextAuth tables
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ============================================================
+// PATIENTS
+// ============================================================
+
+model Patient {
+  id          String    @id @default(cuid())
+  clinicId    String
+  name        String
+  email       String?
+  phone       String    // WhatsApp number
+  birthDate   DateTime?
+  document    String?   // CPF
+  gender      String?
+  address     Json?
+  notes       String?
+  isActive    Boolean   @default(true)
+  lastVisit   DateTime?
+  tags        Tag[]
+  metadata    Json      @default("{}")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  clinic          Clinic         @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  appointments    Appointment[]
+  conversations   Conversation[]
+  payments        Payment[]
+
+  @@index([clinicId])
+  @@index([clinicId, phone])
+  @@index([clinicId, email])
+}
+
+// ============================================================
+// SCHEDULE & APPOINTMENTS
+// ============================================================
+
+model Schedule {
+  id           String   @id @default(cuid())
+  clinicId     String
+  clinicUserId String?  // doctor this schedule belongs to (optional)
+  name         String
+  slotMinutes  Int      @default(30)
+  workingHours Json     // { mon: [{start: "08:00", end: "18:00"}], ... }
+  breakTimes   Json     @default("[]")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  clinic       Clinic       @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+
+  @@index([clinicId])
+}
+
+model Appointment {
+  id            String            @id @default(cuid())
+  clinicId      String
+  patientId     String
+  scheduleId    String
+  doctorId      String?           // ClinicUser id
+  title         String?
+  notes         String?
+  startAt       DateTime
+  endAt         DateTime
+  status        AppointmentStatus @default(SCHEDULED)
+  cancelReason  String?
+  confirmedAt   DateTime?
+  reminderSent  Boolean           @default(false)
+  metadata      Json              @default("{}")
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  clinic    Clinic      @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  patient   Patient     @relation(fields: [patientId], references: [id])
+  schedule  Schedule    @relation(fields: [scheduleId], references: [id])
+  doctor    ClinicUser? @relation("DoctorAppointments", fields: [doctorId], references: [id])
+  payment   Payment?
+
+  @@index([clinicId])
+  @@index([clinicId, startAt])
+  @@index([clinicId, patientId])
+  @@index([clinicId, status])
+}
+
+// ============================================================
+// WHATSAPP
+// ============================================================
+
+model WhatsappInstance {
+  id             String   @id @default(cuid())
+  clinicId       String
+  name           String
+  instanceKey    String   @unique // Evolution API instance key
+  phoneNumber    String?
+  status         String   @default("DISCONNECTED")
+  qrCode         String?
+  webhookUrl     String?
+  isActive       Boolean  @default(true)
+  settings       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  clinic        Clinic         @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+
+  @@index([clinicId])
+}
+
+model Conversation {
+  id                  String             @id @default(cuid())
+  clinicId            String
+  patientId           String?
+  whatsappInstanceId  String
+  remoteJid           String             // WA phone@s.whatsapp.net
+  status              ConversationStatus @default(OPEN)
+  assignedUserId      String?
+  aiEnabled           Boolean            @default(true)
+  lastMessageAt       DateTime?
+  metadata            Json               @default("{}")
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  clinic           Clinic           @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  patient          Patient?         @relation(fields: [patientId], references: [id])
+  whatsappInstance WhatsappInstance @relation(fields: [whatsappInstanceId], references: [id])
+  messages         Message[]
+
+  @@index([clinicId])
+  @@index([clinicId, remoteJid])
+  @@index([clinicId, status])
+}
+
+model Message {
+  id             String          @id @default(cuid())
+  conversationId String
+  externalId     String?         @unique // WA message ID
+  direction      MessageDirection
+  content        String
+  type           String          @default("text") // text|image|audio|document
+  mediaUrl       String?
+  status         MessageStatus   @default(QUEUED)
+  isFromBot      Boolean         @default(false)
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  metadata       Json            @default("{}")
+  createdAt      DateTime        @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([externalId])
+}
+
+// ============================================================
+// AI
+// ============================================================
+
+model AiConfig {
+  id              String   @id @default(cuid())
+  clinicId        String   @unique
+  provider        String   @default("openai") // openai|gemini
+  model           String   @default("gpt-4o-mini")
+  systemPrompt    String
+  welcomeMessage  String?
+  isEnabled       Boolean  @default(true)
+  monthlyLimit    Int      @default(500)
+  monthlyUsed     Int      @default(0)
+  usageResetAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================
+// FINANCIAL
+// ============================================================
+
+model Payment {
+  id              String        @id @default(cuid())
+  clinicId        String
+  patientId       String?
+  appointmentId   String?       @unique
+  description     String
+  amount          Decimal       @db.Decimal(10, 2)
+  method          PaymentMethod @default(PIX)
+  status          PaymentStatus @default(PENDING)
+  dueDate         DateTime?
+  paidAt          DateTime?
+  pixCode         String?
+  pixQrCode       String?
+  paymentLink     String?
+  externalId      String?       // Stripe/Pagar.me ID
+  notes           String?
+  metadata        Json          @default("{}")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  clinic      Clinic       @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  patient     Patient?     @relation(fields: [patientId], references: [id])
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+
+  @@index([clinicId])
+  @@index([clinicId, status])
+  @@index([clinicId, patientId])
+}
+
+// ============================================================
+// AUTOMATION
+// ============================================================
+
+model Automation {
+  id          String            @id @default(cuid())
+  clinicId    String
+  name        String
+  description String?
+  trigger     AutomationTrigger
+  conditions  Json              @default("{}")  // filter conditions
+  actions     Json              // array of actions
+  status      AutomationStatus  @default(DRAFT)
+  n8nWorkflowId String?         // linked N8N workflow
+  executionCount Int            @default(0)
+  lastExecutedAt DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId])
+  @@index([clinicId, trigger])
+}
+
+// ============================================================
+// TAGS (shared across patients)
+// ============================================================
+
+model Tag {
+  id        String   @id @default(cuid())
+  clinicId  String
+  name      String
+  color     String   @default("#6366f1")
+  createdAt DateTime @default(now())
+
+  clinic   Clinic    @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  patients Patient[]
+
+  @@unique([clinicId, name])
+  @@index([clinicId])
+}
+
+// ============================================================
+// SUBSCRIPTION & BILLING
+// ============================================================
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  clinicId             String             @unique
+  planId               String
+  status               SubscriptionStatus @default(TRIALING)
+  trialEndsAt          DateTime?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  stripeSubscriptionId String?
+  stripeCustomerId     String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  @@index([stripeSubscriptionId])
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  clinicId        String
+  amount          Decimal       @db.Decimal(10, 2)
+  status          PaymentStatus @default(PENDING)
+  dueDate         DateTime
+  paidAt          DateTime?
+  stripeInvoiceId String?
+  createdAt       DateTime      @default(now())
+
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@index([clinicId])
+}
+
+// ============================================================
+// AUDIT LOG
+// ============================================================
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  clinicId   String?
+  userId     String?
+  action     AuditAction
+  subject    String      // e.g. "Patient", "Appointment"
+  subjectId  String?
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime    @default(now())
+
+  clinic Clinic? @relation(fields: [clinicId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
+
+  @@index([clinicId])
+  @@index([clinicId, action])
+  @@index([clinicId, subject, subjectId])
+  @@index([createdAt])
+}
