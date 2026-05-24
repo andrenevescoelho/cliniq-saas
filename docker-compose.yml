@@ -78,6 +78,7 @@ services:
       - SERVER_URL=http://localhost:8080
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-cliniq_evolution_key}
       - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
       - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-cliniq}:${POSTGRES_PASSWORD:-cliniq_secret}@postgres:5432/${EVOLUTION_POSTGRES_DB:-evolution_db}
       - REDIS_ENABLED=true
       - REDIS_URI=redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379
