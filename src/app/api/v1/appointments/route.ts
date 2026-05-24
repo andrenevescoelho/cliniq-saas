@@ -41,15 +41,3 @@ export const POST = withAuth(async (req, { clinicId, ability }) => {
   const appointment = await service.create(clinicId, parsed.data);
   return created(appointment);
 });
-
-// GET /api/v1/appointments/slots?scheduleId=...&date=...
-export const GET_SLOTS = withAuth(async (req, { clinicId }) => {
-  const { searchParams } = new URL(req.url);
-  const scheduleId = searchParams.get("scheduleId");
-  const date = searchParams.get("date");
-
-  if (!scheduleId || !date) return badRequest("scheduleId e date são obrigatórios");
-
-  const slots = await service.getAvailableSlots(clinicId, scheduleId, new Date(date));
-  return ok(slots);
-});

@@ -1,5 +1,6 @@
 // lib/auth.ts
 import NextAuth, { type DefaultSession, type NextAuthConfig } from "next-auth";
+import type {} from "next-auth/jwt";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcryptjs";
@@ -31,6 +32,7 @@ declare module "next-auth/jwt" {
 
 export const authConfig: NextAuthConfig = {
   adapter: PrismaAdapter(prisma),
+  secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET,
   session: { strategy: "jwt" },
   pages: {
     signIn: "/login",
@@ -47,15 +49,19 @@ export const authConfig: NextAuthConfig = {
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
 
+        const email = String(credentials.email);
+        const password = String(credentials.password);
+        const clinicSlug = credentials.clinicSlug
+          ? String(credentials.clinicSlug)
+          : undefined;
+
         const user = await prisma.user.findUnique({
-          where: { email: credentials.email as string },
+          where: { email },
           include: {
             clinics: {
               where: {
                 isActive: true,
-                clinic: credentials.clinicSlug
-                  ? { slug: credentials.clinicSlug as string }
-                  : undefined,
+                clinic: clinicSlug ? { slug: clinicSlug } : undefined,
               },
               include: { clinic: true },
               take: 1,
@@ -67,7 +73,7 @@ export const authConfig: NextAuthConfig = {
         if (!user.isActive) return null;
 
         const valid = await bcrypt.compare(
-          credentials.password as string,
+          password,
           user.passwordHash
         );
         if (!valid) return null;
