@@ -12,6 +12,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-cliniq_db}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     healthcheck:
@@ -53,7 +54,7 @@ services:
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
       - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=n8n_db
+      - DB_POSTGRESDB_DATABASE=${N8N_POSTGRES_DB:-n8n_db}
       - DB_POSTGRESDB_USER=${POSTGRES_USER:-cliniq}
       - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-cliniq_secret}
       - WEBHOOK_URL=http://localhost:5678/
@@ -77,7 +78,7 @@ services:
       - SERVER_URL=http://localhost:8080
       - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-cliniq_evolution_key}
       - DATABASE_ENABLED=true
-      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-cliniq}:${POSTGRES_PASSWORD:-cliniq_secret}@postgres:5432/evolution_db
+      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-cliniq}:${POSTGRES_PASSWORD:-cliniq_secret}@postgres:5432/${EVOLUTION_POSTGRES_DB:-evolution_db}
       - REDIS_ENABLED=true
       - REDIS_URI=redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379
       - WEBHOOK_GLOBAL_ENABLED=false
