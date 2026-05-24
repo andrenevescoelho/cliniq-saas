@@ -49,6 +49,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 }
-
-// app/api/v1/patients/route.ts
-export { GET, POST } from "./patients.handlers";

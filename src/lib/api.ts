@@ -56,10 +56,14 @@ type RouteHandler = (
   params?: Record<string, string>
 ) => Promise<NextResponse>;
 
+interface AppRouteContext {
+  params: Promise<Record<string, string>>;
+}
+
 export function withAuth(handler: RouteHandler) {
   return async (
     req: Request,
-    { params }: { params?: Record<string, string> } = {}
+    { params }: AppRouteContext
   ) => {
     try {
       const session = await auth();
@@ -69,7 +73,8 @@ export function withAuth(handler: RouteHandler) {
       if (!clinicId || !role) return forbidden();
 
       const ability = buildAbilityFor(role);
-      return await handler(req, { clinicId, userId, role, ability }, params);
+      const resolvedParams = await params;
+      return await handler(req, { clinicId, userId, role, ability }, resolvedParams);
     } catch (error: any) {
       // Map AppError subclasses to correct HTTP responses
       if (error?.statusCode === 404) return notFound(error.message);
