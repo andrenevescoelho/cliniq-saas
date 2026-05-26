@@ -28,17 +28,23 @@ services:
     image: redis:7-alpine
     container_name: cliniq_redis
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret}
+    # remove o command com requirepass
     volumes:
       - redis_data:/data
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  redis-evolution:
+    image: redis:7-alpine
+    container_name: cliniq_redis_evolution
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
   # ──────────────────────────────────────
   # N8N
   # ──────────────────────────────────────
@@ -59,6 +65,8 @@ services:
       - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-cliniq_secret}
       - WEBHOOK_URL=http://localhost:5678/
       - GENERIC_TIMEZONE=America/Sao_Paulo
+      - REDIS_ENABLED=true
+      - REDIS_URI=redis://redis:6379/0
     volumes:
       - n8n_data:/home/node/.n8n
     ports:
@@ -75,15 +83,38 @@ services:
     container_name: cliniq_evolution
     restart: unless-stopped
     environment:
-      - SERVER_URL=http://localhost:8080
-      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-cliniq_evolution_key}
-      - DATABASE_ENABLED=true
+      - SERVER_URL=http://100.80.38.42:8080
+      - SERVER_PORT=8080
+      - SERVER_TYPE=http
+      - CORS_ORIGIN=*
+      - CORS_METHODS=GET,POST,PUT,DELETE
+      - CORS_CREDENTIALS=true
+      - LOG_COLOR=true
+      - LOG_BAILEYS=debug
+      - LOG_LEVEL=ERROR,WARN,INFO,LOG,DEBUG
       - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-cliniq}:${POSTGRES_PASSWORD:-cliniq_secret}@postgres:5432/${EVOLUTION_POSTGRES_DB:-evolution_db}
-      - REDIS_ENABLED=true
-      - REDIS_URI=redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379/0
+      - DATABASE_URL=postgresql://cliniq:cliniq_secret@postgres:5432/evolution_db
+      - DATABASE_CONNECTION_URI=postgresql://cliniq:cliniq_secret@postgres:5432/evolution_db
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_exchange
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      - DATABASE_SAVE_DATA_HISTORIC=true
+      - AUTHENTICATION_API_KEY=cliniq_evolution_key
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379/6
+      - CACHE_REDIS_TTL=604800
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_SAVE_INSTANCES=false
       - WEBHOOK_GLOBAL_ENABLED=false
-      - LOG_LEVEL=ERROR
+      - RABBITMQ_ENABLED=false
+      - WEBSOCKET_ENABLED=false
+      - DEL_INSTANCE=false
+      - QRCODE_LIMIT=30
+      - CONFIG_SESSION_PHONE_VERSION=2.3000.1023368132
+    volumes: []
     ports:
       - "8080:8080"
     depends_on:
@@ -91,7 +122,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-
   # ──────────────────────────────────────
   # App (Next.js) — dev mode
   # ──────────────────────────────────────
@@ -103,7 +133,7 @@ services:
     restart: unless-stopped
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-cliniq}:${POSTGRES_PASSWORD:-cliniq_secret}@postgres:5432/${POSTGRES_DB:-cliniq_db}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379
+      - REDIS_URL=redis://redis:6379
       - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-changeme_nextauth_secret}
       - EVOLUTION_API_URL=http://evolution:8080
@@ -121,6 +151,28 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+
+  workers:
+    build:
+      context: .
+      dockerfile: Dockerfile.workers
+    container_name: cliniq_workers
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://cliniq:cliniq_secret@postgres:5432/cliniq_db
+      - REDIS_URL=redis://redis:6379
+      - EVOLUTION_API_URL=http://evolution:8080
+      - EVOLUTION_API_KEY=cliniq_evolution_key
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - NEXTAUTH_URL=http://100.80.38.42:3000
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:
