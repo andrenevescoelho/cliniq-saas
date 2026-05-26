@@ -1,78 +1,76 @@
 // modules/ai/services/ai-agent.service.ts
-import OpenAI from "openai";
 import { prisma } from "../../../lib/prisma";
 import { Queues } from "../../../lib/queues";
 import { AppointmentService } from "../../appointment/services/appointment.service";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// ── Tool definitions (provider-agnostic) ─────────────────────────────────────
 
-const CLINIC_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+const TOOLS_SPEC = [
   {
-    type: "function",
-    function: {
-      name: "check_available_slots",
-      description: "Verifica horários disponíveis na agenda",
-      parameters: {
-        type: "object",
-        properties: {
-          date: { type: "string", description: "Data YYYY-MM-DD" },
-          scheduleId: { type: "string" },
-        },
-        required: ["date"],
+    name: "check_available_slots",
+    description: "Verifica horários disponíveis na agenda",
+    parameters: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "Data YYYY-MM-DD" },
+        scheduleId: { type: "string" },
       },
+      required: ["date"],
     },
   },
   {
-    type: "function",
-    function: {
-      name: "book_appointment",
-      description: "Agenda uma consulta para o paciente",
-      parameters: {
-        type: "object",
-        properties: {
-          patientName: { type: "string" },
-          patientPhone: { type: "string" },
-          startAt: { type: "string" },
-          endAt: { type: "string" },
-          scheduleId: { type: "string" },
-          notes: { type: "string" },
-        },
-        required: ["patientName", "patientPhone", "startAt", "endAt", "scheduleId"],
+    name: "book_appointment",
+    description: "Agenda uma consulta para o paciente",
+    parameters: {
+      type: "object",
+      properties: {
+        patientName: { type: "string" },
+        patientPhone: { type: "string" },
+        startAt: { type: "string" },
+        endAt: { type: "string" },
+        scheduleId: { type: "string" },
+        notes: { type: "string" },
       },
+      required: ["patientName", "patientPhone", "startAt", "endAt", "scheduleId"],
     },
   },
   {
-    type: "function",
-    function: {
-      name: "get_next_appointment",
-      description: "Retorna próximo agendamento do paciente",
-      parameters: {
-        type: "object",
-        properties: { phone: { type: "string" } },
-        required: ["phone"],
+    name: "cancel_appointment",
+    description: "Cancela o próximo agendamento do paciente",
+    parameters: {
+      type: "object",
+      properties: {
+        phone: { type: "string" },
+        reason: { type: "string" },
       },
+      required: ["phone"],
     },
   },
   {
-    type: "function",
-    function: {
-      name: "get_clinic_info",
-      description: "Retorna informações da clínica",
-      parameters: { type: "object", properties: {} },
+    name: "get_next_appointment",
+    description: "Retorna próximo agendamento do paciente",
+    parameters: {
+      type: "object",
+      properties: { phone: { type: "string" } },
+      required: ["phone"],
     },
   },
   {
-    type: "function",
-    function: {
-      name: "transfer_to_human",
-      description: "Transfere para atendente humano",
-      parameters: {
-        type: "object",
-        properties: { reason: { type: "string" } },
-      },
+    name: "get_clinic_info",
+    description: "Retorna informações da clínica",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "transfer_to_human",
+    description: "Transfere para atendente humano quando não souber responder",
+    parameters: {
+      type: "object",
+      properties: { reason: { type: "string" } },
     },
   },
 ];
+
+// ── Tool Executor ─────────────────────────────────────────────────────────────
 
 class ClinicToolExecutor {
   constructor(
@@ -87,6 +85,8 @@ class ClinicToolExecutor {
         return this.checkSlots(args.date as string, args.scheduleId as string);
       case "book_appointment":
         return this.bookAppointment(args);
+      case "cancel_appointment":
+        return this.cancelAppointment(args.phone as string, args.reason as string);
       case "get_next_appointment":
         return this.getNextAppointment(args.phone as string);
       case "get_clinic_info":
@@ -102,7 +102,7 @@ class ClinicToolExecutor {
     const schedule = await prisma.schedule.findFirst({
       where: { clinicId: this.clinicId, isActive: true },
     });
-    if (!schedule) return { slots: [] };
+    if (!schedule) return { slots: [], message: "Nenhuma agenda disponível" };
 
     const svc = new AppointmentService();
     const slots = await svc.getAvailableSlots(
@@ -113,8 +113,10 @@ class ClinicToolExecutor {
 
     return {
       scheduleId: scheduleId ?? schedule.id,
+      date,
       slots: slots.slice(0, 8).map((s) => ({
         startAt: s.startAt.toISOString(),
+        endAt: s.endAt.toISOString(),
         label: s.startAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
       })),
     };
@@ -147,10 +149,36 @@ class ClinicToolExecutor {
     return {
       success: true,
       date: appointment.startAt.toLocaleDateString("pt-BR"),
-      time: appointment.startAt.toLocaleTimeString("pt-BR", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
+      time: appointment.startAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      appointmentId: appointment.id,
+    };
+  }
+
+  private async cancelAppointment(phone: string, reason?: string) {
+    const patient = await prisma.patient.findFirst({
+      where: { clinicId: this.clinicId, phone: { contains: phone.slice(-9) } },
+    });
+    if (!patient) return { success: false, message: "Paciente não encontrado" };
+
+    const appointment = await prisma.appointment.findFirst({
+      where: {
+        clinicId: this.clinicId,
+        patientId: patient.id,
+        startAt: { gte: new Date() },
+        status: { notIn: ["CANCELLED", "RESCHEDULED"] },
+      },
+      orderBy: { startAt: "asc" },
+    });
+
+    if (!appointment) return { success: false, message: "Nenhum agendamento encontrado" };
+
+    const svc = new AppointmentService();
+    await svc.cancel(this.clinicId, appointment.id, reason);
+
+    return {
+      success: true,
+      date: appointment.startAt.toLocaleDateString("pt-BR"),
+      time: appointment.startAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
     };
   }
 
@@ -175,10 +203,8 @@ class ClinicToolExecutor {
     return {
       found: true,
       date: appointment.startAt.toLocaleDateString("pt-BR"),
-      time: appointment.startAt.toLocaleTimeString("pt-BR", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
+      time: appointment.startAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      status: appointment.status,
     };
   }
 
@@ -192,18 +218,123 @@ class ClinicToolExecutor {
   private async transferToHuman(reason?: string) {
     await prisma.conversation.update({
       where: { id: this.conversationId },
-      data: { status: "WAITING_HUMAN" },
+      data: { status: "WAITING_HUMAN", aiEnabled: false },
     });
-
-    await Queues.NOTIFICATIONS_EMAIL.add("human.transfer", {
-      clinicId: this.clinicId,
-      conversationId: this.conversationId,
-      reason,
-    });
-
-    return { transferred: true };
+    return { transferred: true, reason };
   }
 }
+
+// ── OpenAI Provider ───────────────────────────────────────────────────────────
+
+async function runOpenAI(
+  model: string,
+  systemPrompt: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  executor: ClinicToolExecutor
+): Promise<string | null> {
+  const { default: OpenAI } = await import("openai");
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  const openaiTools = TOOLS_SPEC.map((t) => ({
+    type: "function" as const,
+    function: t,
+  }));
+
+  let messages: any[] = [
+    { role: "system", content: systemPrompt },
+    ...history,
+  ];
+
+  let response = await openai.chat.completions.create({
+    model,
+    messages,
+    tools: openaiTools,
+    tool_choice: "auto",
+  });
+
+  let iterations = 0;
+  while (response.choices[0].finish_reason === "tool_calls" && iterations < 3) {
+    const toolCalls = response.choices[0].message.tool_calls ?? [];
+    messages.push(response.choices[0].message);
+
+    for (const tc of toolCalls) {
+      const args = JSON.parse(tc.function.arguments);
+      const result = await executor.execute(tc.function.name, args);
+      messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
+    }
+
+    response = await openai.chat.completions.create({ model, messages, tools: openaiTools });
+    iterations++;
+  }
+
+  return response.choices[0].message.content;
+}
+
+// ── Gemini Provider ───────────────────────────────────────────────────────────
+
+async function runGemini(
+  model: string,
+  systemPrompt: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  executor: ClinicToolExecutor
+): Promise<string | null> {
+  const { GoogleGenerativeAI } = await import("@google/generative-ai");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+
+  const geminiTools = [{
+    functionDeclarations: TOOLS_SPEC.map((t) => ({
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    })),
+  }];
+
+  const geminiModel = genAI.getGenerativeModel({
+    model: model || "gemini-1.5-flash",
+    systemInstruction: systemPrompt,
+    tools: geminiTools as any,
+  });
+
+  const geminiHistory = history.slice(0, -1).map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
+  const chat = geminiModel.startChat({ history: geminiHistory });
+  const lastMessage = history[history.length - 1]?.content ?? "";
+
+  let result = await chat.sendMessage(lastMessage);
+
+  let iterations = 0;
+  while (iterations < 3) {
+    const parts = result.response.candidates?.[0]?.content?.parts ?? [];
+    const toolCalls = parts.filter((p: any) => p.functionCall);
+
+    if (!toolCalls.length) break;
+
+    const toolResponses = await Promise.all(
+      toolCalls.map(async (p: any) => {
+        console.log("[TOOL]", p.functionCall.name, JSON.stringify(p.functionCall.args ?? {}));
+        console.log("[TOOL]", p.functionCall.name, JSON.stringify(p.functionCall.args ?? {}));
+        const toolResult = await executor.execute(p.functionCall.name, p.functionCall.args ?? {});
+        return {
+          functionResponse: {
+            name: p.functionCall.name,
+            response: toolResult,
+          },
+        };
+      })
+    );
+
+    result = await chat.sendMessage(toolResponses as any);
+    iterations++;
+  }
+
+  const textPart = result.response.candidates?.[0]?.content?.parts?.find((p: any) => p.text);
+  return textPart?.text ?? null;
+}
+
+// ── Main Service ──────────────────────────────────────────────────────────────
 
 export class AiAgentService {
   async processMessage(job: {
@@ -232,49 +363,27 @@ export class AiAgentService {
       take: 20,
     });
 
-    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      { role: "system", content: aiConfig.systemPrompt },
-      ...history.map((m) => ({
-        role: (m.direction === "INBOUND" ? "user" : "assistant") as "user" | "assistant",
-        content: m.content,
-      })),
-    ];
+    const messages = history.map((m) => ({
+      role: (m.direction === "INBOUND" ? "user" : "assistant") as "user" | "assistant",
+      content: m.content,
+    }));
 
     const phone = job.remoteJid.replace("@s.whatsapp.net", "");
     const executor = new ClinicToolExecutor(job.clinicId, job.conversationId, phone);
 
-    let response = await openai.chat.completions.create({
-      model: aiConfig.model,
-      messages,
-      tools: CLINIC_TOOLS,
-      tool_choice: "auto",
-    });
+    let replyText: string | null = null;
 
-    let iterations = 0;
-    while (response.choices[0].finish_reason === "tool_calls" && iterations < 3) {
-      const toolCalls = response.choices[0].message.tool_calls ?? [];
-      messages.push(response.choices[0].message);
-
-      for (const tc of toolCalls) {
-        const args = JSON.parse(tc.function.arguments);
-        const result = await executor.execute(tc.function.name, args);
-        messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: JSON.stringify(result),
-        });
+    try {
+      if (aiConfig.provider === "gemini") {
+        replyText = await runGemini(aiConfig.model, aiConfig.systemPrompt, messages, executor);
+      } else {
+        replyText = await runOpenAI(aiConfig.model, aiConfig.systemPrompt, messages, executor);
       }
-
-      response = await openai.chat.completions.create({
-        model: aiConfig.model,
-        messages,
-        tools: CLINIC_TOOLS,
-      });
-
-      iterations++;
+    } catch (err: any) {
+      console.error(`[AI] ${aiConfig.provider} error:`, err.message);
+      return;
     }
 
-    const replyText = response.choices[0].message.content;
     if (!replyText) return;
 
     await prisma.message.create({
@@ -304,5 +413,7 @@ export class AiAgentService {
       where: { clinicId: job.clinicId },
       data: { monthlyUsed: { increment: 1 } },
     });
+
+    console.log(`[AI] ${aiConfig.provider} replied to ${phone}`);
   }
 }
